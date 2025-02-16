@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import RedisClient from '@redis/client/dist/lib/client';
 import { RedisClientType, createClient } from 'redis';
 
 @Injectable()

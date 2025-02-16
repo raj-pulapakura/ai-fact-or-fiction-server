@@ -4,7 +4,6 @@ import { AppService } from './app.service';
 import { ConfigModule } from '@nestjs/config';
 import { RedisService } from './services/redis.service';
 import { GameModule } from './modules/game/game.module';
-import { RedisModule } from 'nestjs-redis'
 
 @Module({
   imports: [
