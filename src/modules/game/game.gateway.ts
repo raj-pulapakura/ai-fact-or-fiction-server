@@ -11,6 +11,7 @@ import { Server, Socket } from 'socket.io';
 interface Player {
     name: string;
     isHost: boolean;
+    points: number;
 }
 
 interface Game {
@@ -18,9 +19,9 @@ interface Game {
     players: Record<string, Player>; // {socketId: Player}
     maxRounds: number;
     currentRound: string;
-    votes: Record<string, string>; // { socketId: "fact" | "fiction" }
+    currentRoundIndex: number;
     isRoundActive: boolean;
-    pastRounds: { fact: string; results: Record<string, boolean> }[];
+    roundTimeLimit: number;
 }
 
 @WebSocketGateway()
@@ -60,12 +61,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const gameId = this.generateGameId();
         const newGame: Game = {
             gameId,
-            players: { [client.id]: { name: data.playerName, isHost: true } },
+            players: { [client.id]: { name: data.playerName, isHost: true, points: 0 } },
             maxRounds: data.maxRounds,
             currentRound: '',
-            votes: {},
+            currentRoundIndex: -1,
             isRoundActive: false,
-            pastRounds: [],
+            roundTimeLimit: 30
         };
 
         this.games.push(newGame);
@@ -83,7 +84,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     ) {
         const game = this.games.find(g => g.gameId === data.gameId);
         if (game) {
-            game.players[client.id] = { name: data.playerName, isHost: false };
+            game.players[client.id] = { name: data.playerName, isHost: false, points: 0 };
             client.emit('gameJoined', { players: game.players });
             this.emitToGame(data.gameId, 'updatePlayers', { players: game.players });
 
@@ -109,12 +110,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         if (game && !game.isRoundActive) {
             console.log("STARTING ROUND")
             const fact = this.generateRandomFact();
-            const roundIndex = game.pastRounds.length;
+            const roundIndex = game.currentRoundIndex + 1;
             game.isRoundActive = true;
-            game.votes = {}; // Reset votes for the new round
             game.currentRound = fact;
             this.emitToGame(gameId, 'newRound', { fact, roundIndex });
-            let countdown = 30;
+            let countdown = game.roundTimeLimit;
             this.emitToGame(gameId, 'countdown', countdown);
             const interval = setInterval(() => {
                 countdown--;
@@ -135,70 +135,40 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Submit a player's vote
     @SubscribeMessage('submitVote')
-    submitVote(client: Socket, data: { vote: string }) {
+    submitVote(client: Socket, data: { vote: string, timeRemaining: number }) {
         const game = this.findGameByPlayerSocket(client.id);
         if (game && game.isRoundActive) {
-            game.votes[client.id] = data.vote;
-
-            // Check if all players have voted
-            if (Object.keys(game.votes).length === Object.keys(game.players).length) {
-                this.endRound(game);
-            }
+            const correctAnswer = this.getCorrectAnswer(game.currentRound); // Assume a function that checks the answer
+            const pointsAwarded =
+                data.vote !== correctAnswer
+                    ? 0
+                    : Math.round((1 - ((game.roundTimeLimit - data.timeRemaining) / game.roundTimeLimit)) * 1000);
+            game.players[client.id].points += pointsAwarded;
         }
     }
 
     // End the round and calculate results
     private endRound(game: Game) {
         game.isRoundActive = false;
-        const correctAnswer = this.getCorrectAnswer(game.currentRound); // Assume a function that checks the answer
 
-        game.pastRounds.push({
-            fact: game.currentRound,
-            results: Object.fromEntries(
-                Object.entries(game.votes).map(([socketId, vote]) => [
-                    socketId,
-                    vote === correctAnswer,
-                ])
-            ),
-        });
+        const correctAnswer = this.getCorrectAnswer(game.currentRound);
+
+        const currentResults: { socketId: string, name: string, points: number }[]
+            = Object.entries(game.players).map(([socketId, player]) => {
+                return { socketId, name: player.name, points: player.points };
+            });
+
+        currentResults.sort((a, b) => b.points - a.points);
 
         this.emitToGame(game.gameId, 'roundResults', {
             correctAnswer,
-            results: game.pastRounds[game.pastRounds.length - 1].results,
+            results: currentResults
         });
 
-        console.log('Round ended for game:', game.gameId);
-
         // Check if the game is over
-        if (game.pastRounds.length === game.maxRounds) {
+        if (game.currentRoundIndex + 1 === game.maxRounds) {
             // Calculate winner
-            const scores: Record<string, number> = {};
-            Object.keys(game.players).forEach(socketId => {
-                scores[socketId] = game.pastRounds.reduce((acc, round) => {
-                    return acc + (round.results[socketId] ? 1 : 0);
-                }, 0);
-            });
-            const scoresList: { playerId: string, score: number }[] = [];
-            Object.entries(scores).forEach(([playerId, score]) => {
-                scoresList.push({ playerId, score });
-            });
-
-            scoresList.sort((a, b) => b.score - a.score);
-
-            const scoresSet = Array.from(new Set(scoresList.map((player) => player.score)));
-            scoresSet.sort((a, b) => b - a);
-
-            const results = scoresList.map((player) => {
-                return {
-                    playerId: player.playerId,
-                    name: game.players[player.playerId].name,
-                    score: player.score,
-                    rank: scoresSet.indexOf(player.score) + 1,
-                };
-            });
-
-            this.emitToGame(game.gameId, 'gameOver', { results });
-
+            this.emitToGame(game.gameId, 'gameOver', { results: currentResults });
             return;
         }
 
