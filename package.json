@@ -28,6 +28,7 @@
     "@nestjs/platform-socket.io": "^11.0.9",
     "@nestjs/websockets": "^11.0.9",
     "cache-manager": "^6.4.0",
+    "openai": "^4.85.1",
     "redis": "^4.7.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",

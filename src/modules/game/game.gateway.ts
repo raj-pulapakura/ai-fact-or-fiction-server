@@ -7,6 +7,10 @@ import {
     OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { QuestionsService } from '../questions/questions.service';
+import { TrueFalseQuestion } from '../questions/entities/TrueFalseQuestion.interface';
+import { MultipleChoiceQuestion } from '../questions/entities/MultipleChoiceQuestion.interface';
+import { QuestionType } from 'src/types/QuestionType.enum';
 
 interface Player {
     name: string;
@@ -18,6 +22,7 @@ interface Game {
     gameId: string;
     players: Record<string, Player>; // {socketId: Player}
     maxRounds: number;
+    questions: { question: TrueFalseQuestion | MultipleChoiceQuestion, type: QuestionType }[];
     currentRound: string;
     currentRoundIndex: number;
     isRoundActive: boolean;
@@ -27,6 +32,10 @@ interface Game {
 @WebSocketGateway()
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @WebSocketServer() server: Server;
+
+    constructor(
+        private readonly questionsService: QuestionsService
+    ) { }
 
     private games: Game[] = []; // Store active games
 
@@ -57,7 +66,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Create a new game
     @SubscribeMessage('createGame')
-    createGame(client: Socket, data: { playerName: string, maxRounds: number }) {
+    async createGame(client: Socket, data: { playerName: string, maxRounds: number }) {
+
         const gameId = this.generateGameId();
         const newGame: Game = {
             gameId,
@@ -66,7 +76,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             currentRound: '',
             currentRoundIndex: -1,
             isRoundActive: false,
-            roundTimeLimit: 30
+            roundTimeLimit: 30,
+            questions: [],
         };
 
         this.games.push(newGame);
@@ -104,16 +115,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Start a new round with a random fact
     @SubscribeMessage('startRound')
-    startRound(client: Socket | null, gameId: string) {
+    async startRound(client: Socket | null, gameId: string) {
         const game = this.games.find(g => g.gameId === gameId);
 
         if (game && !game.isRoundActive) {
-            console.log("STARTING ROUND")
             const fact = this.generateRandomFact();
             const roundIndex = game.currentRoundIndex + 1;
+            const question = await this.questionsService.generateTrueFalseQuestion();
+            const questionObj = { question: question, type: QuestionType.TRUE_FALSE };
+            game.questions.push(questionObj);
+            game.currentRoundIndex = roundIndex;
             game.isRoundActive = true;
-            game.currentRound = fact;
-            this.emitToGame(gameId, 'newRound', { fact, roundIndex });
+            game.currentRound = question.question
+            this.emitToGame(gameId, 'newRound', { question: question.question, questionType: questionObj.type, roundIndex });
             let countdown = game.roundTimeLimit;
             this.emitToGame(gameId, 'countdown', countdown);
             const interval = setInterval(() => {
@@ -135,10 +149,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Submit a player's vote
     @SubscribeMessage('submitVote')
-    submitVote(client: Socket, data: { vote: string, timeRemaining: number }) {
+    submitVote(client: Socket, data: { vote: any, timeRemaining: number }) {
         const game = this.findGameByPlayerSocket(client.id);
         if (game && game.isRoundActive) {
-            const correctAnswer = this.getCorrectAnswer(game.currentRound); // Assume a function that checks the answer
+            const correctAnswer = game.questions[game.currentRoundIndex].question.answer;
             const pointsAwarded =
                 data.vote !== correctAnswer
                     ? 0
@@ -151,7 +165,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private endRound(game: Game) {
         game.isRoundActive = false;
 
-        const correctAnswer = this.getCorrectAnswer(game.currentRound);
+        const correctAnswer = game.questions[0].question.question;
 
         const currentResults: { socketId: string, name: string, points: number }[]
             = Object.entries(game.players).map(([socketId, player]) => {
