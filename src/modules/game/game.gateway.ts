@@ -11,6 +11,8 @@ import { QuestionsService } from '../questions/questions.service';
 import { TrueFalseQuestion } from '../questions/entities/TrueFalseQuestion.interface';
 import { MultipleChoiceQuestion } from '../questions/entities/MultipleChoiceQuestion.interface';
 import { QuestionType } from 'src/types/QuestionType.enum';
+import { Logger } from '@nestjs/common';
+
 
 interface Player {
     name: string;
@@ -21,9 +23,10 @@ interface Player {
 interface Game {
     gameId: string;
     players: Record<string, Player>; // {socketId: Player}
-    maxRounds: number;
-    questions: { question: TrueFalseQuestion | MultipleChoiceQuestion, type: QuestionType }[];
-    currentRound: string;
+    categories: { value: string, playerName: string }[];
+    numRounds: number;
+    questions: ({ question: MultipleChoiceQuestion, type: QuestionType.MULTIPLE_CHOICE } | { question: TrueFalseQuestion, type: QuestionType.TRUE_FALSE })[];
+    currentCategoryIndex: number;
     currentRoundIndex: number;
     isRoundActive: boolean;
     roundTimeLimit: number;
@@ -31,30 +34,29 @@ interface Game {
 
 @WebSocketGateway()
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
+    private readonly logger = new Logger(GameGateway.name);
+
     @WebSocketServer() server: Server;
 
     constructor(
         private readonly questionsService: QuestionsService
     ) { }
 
-    private games: Game[] = []; // Store active games
+    private games: Game[] = [];
 
-    // Handle new connection
     handleConnection(client: Socket) {
-        console.log(`Client connected: ${client.id}`);
+        this.logger.log(`Client connected: ${client.id}`);
     }
 
-    // Handle disconnection
     handleDisconnect(client: Socket) {
-        console.log(`Client disconnected: ${client.id}`);
+        this.logger.log(`Client disconnected: ${client.id}`);
 
-        // Remove the player from all games
         this.games.forEach(game => {
             delete game.players[client.id];
+            this.emitToGame(game.gameId, 'updatePlayers', { players: game.players });
         });
     }
 
-    // Emit an event to all players in a game
     private emitToGame(gameId: string, event: string, data: any) {
         const game = this.games.find(g => g.gameId === gameId);
         if (game) {
@@ -64,30 +66,27 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
     }
 
-    // Create a new game
     @SubscribeMessage('createGame')
-    async createGame(client: Socket, data: { playerName: string, maxRounds: number }) {
+    async createGame(client: Socket, data: { playerName: string, numRounds: number }) {
 
         const gameId = this.generateGameId();
         const newGame: Game = {
             gameId,
             players: { [client.id]: { name: data.playerName, isHost: true, points: 0 } },
-            maxRounds: data.maxRounds,
-            currentRound: '',
-            currentRoundIndex: -1,
+            categories: [],
+            currentCategoryIndex: 0,
+            numRounds: data.numRounds,
+            currentRoundIndex: 0,
             isRoundActive: false,
-            roundTimeLimit: 30,
+            roundTimeLimit: 15,
             questions: [],
         };
 
         this.games.push(newGame);
         client.emit('gameCreated', { gameId, hostName: 'Host' });
         this.emitToGame(gameId, 'updatePlayers', { players: newGame.players });
-
-        console.log(`Game created: ${gameId}`);
     }
 
-    // Join an existing game
     @SubscribeMessage('joinGame')
     joinGame(
         client: Socket,
@@ -96,10 +95,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const game = this.games.find(g => g.gameId === data.gameId);
         if (game) {
             game.players[client.id] = { name: data.playerName, isHost: false, points: 0 };
-            client.emit('gameJoined', { players: game.players });
+            client.emit('gameJoined', { players: game.players, selectedCategories: game.categories });
             this.emitToGame(data.gameId, 'updatePlayers', { players: game.players });
-
-            console.log(`${data.playerName} joined game: ${data.gameId}`);
         } else {
             client.emit('error', 'Game not found');
         }
@@ -110,29 +107,77 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const game = this.games.find(g => g.gameId === gameId);
         if (game && Object.keys(game.players).length > 1) {
             this.emitToGame(gameId, 'gameStarted', {});
+            this.startRound(gameId);
         }
     }
 
-    // Start a new round with a random fact
-    @SubscribeMessage('startRound')
-    async startRound(client: Socket | null, gameId: string) {
+    @SubscribeMessage('selectCategory')
+    selectCategory(client: Socket, data: { gameId: string, category: string }) {
+        const game = this.games.find(g => g.gameId === data.gameId);
+        if (game) {
+            const player = game.players[client.id];
+
+            game.categories.push({ value: data.category, playerName: player.name });
+            this.emitToGame(data.gameId, 'categorySelected',
+                { category: data.category, playerName: player.name }
+            );
+        }
+    }
+
+    async startRound(gameId: string) {
         const game = this.games.find(g => g.gameId === gameId);
 
         if (game && !game.isRoundActive) {
-            const fact = this.generateRandomFact();
-            const roundIndex = game.currentRoundIndex + 1;
-            const question = await this.questionsService.generateTrueFalseQuestion();
-            const questionObj = { question: question, type: QuestionType.TRUE_FALSE };
+            const categoryIndex = game.currentCategoryIndex;
+            const category = game.categories[categoryIndex].value;
+            const roundIndex = game.currentRoundIndex;
+
+            if (roundIndex == 0) {
+                this.emitToGame(gameId, 'newCategory', category);
+
+                // Display category to user
+                let countdown = 5;
+                this.emitToGame(gameId, 'categoryCountdown', countdown);
+                await new Promise<void>((resolve) => {
+                    const interval = setInterval(() => {
+                        countdown--;
+                        this.emitToGame(gameId, 'categoryCountdown', countdown);
+                        if (countdown === 0) {
+                            clearInterval(interval);
+                            resolve()
+                        }
+                    }, 1000);
+                });
+            }
+
+            let questionObj;
+
+            if (Math.random() > 0) {
+                const question = await this.questionsService.generateMultipleChoiceQuestion(category);
+                questionObj = { question: question, type: QuestionType.MULTIPLE_CHOICE };
+            }
+            else {
+                const question = await this.questionsService.generateTrueFalseQuestion(category);
+                questionObj = { question: question, type: QuestionType.TRUE_FALSE };
+            }
+
             game.questions.push(questionObj);
-            game.currentRoundIndex = roundIndex;
             game.isRoundActive = true;
-            game.currentRound = question.question
-            this.emitToGame(gameId, 'newRound', { question: question.question, questionType: questionObj.type, roundIndex });
+
+            this.emitToGame(gameId, 'newRound',
+                {
+                    question: questionObj.question.question,
+                    questionType: questionObj.type,
+                    answers: questionObj.type === QuestionType.MULTIPLE_CHOICE ? questionObj.question.options : null,
+                    roundIndex
+                }
+            );
+
             let countdown = game.roundTimeLimit;
             this.emitToGame(gameId, 'countdown', countdown);
+
             const interval = setInterval(() => {
                 countdown--;
-                console.log('Countdown:', countdown);
                 this.emitToGame(gameId, 'countdown', countdown);
                 if (!game.isRoundActive || countdown === 0) {
                     clearInterval(interval);
@@ -143,28 +188,31 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
                     }
                 }
             }, 1000);
-            console.log('New round started for game:', gameId);
         }
     }
 
-    // Submit a player's vote
     @SubscribeMessage('submitVote')
     submitVote(client: Socket, data: { vote: any, timeRemaining: number }) {
-        const game = this.findGameByPlayerSocket(client.id);
+        const game = this.games.find(g => Object.keys(g.players).includes(client.id));
+
         if (game && game.isRoundActive) {
-            const correctAnswer = game.questions[game.currentRoundIndex].question.answer;
+
+            const questionObj = game.questions[game.currentRoundIndex];
+            let correctAnswer = questionObj.question.answer;
+
             const pointsAwarded =
                 data.vote !== correctAnswer
                     ? 0
                     : Math.round((1 - ((game.roundTimeLimit - data.timeRemaining) / game.roundTimeLimit)) * 1000);
+
             game.players[client.id].points += pointsAwarded;
         }
     }
 
-    // End the round and calculate results
     private endRound(game: Game) {
         game.isRoundActive = false;
 
+        // Emit round results
         const correctAnswer = game.questions[0].question.question;
 
         const currentResults: { socketId: string, name: string, points: number }[]
@@ -180,54 +228,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
 
         // Check if the game is over
-        if (game.currentRoundIndex + 1 === game.maxRounds) {
-            // Calculate winner
+        if (game.currentRoundIndex + 1 === game.numRounds && game.currentCategoryIndex + 1 === game.categories.length) {
             this.emitToGame(game.gameId, 'gameOver', { results: currentResults });
             return;
         }
+        // If the category is over, move to the next category
+        else if (game.currentRoundIndex + 1 === game.numRounds) {
+            game.currentRoundIndex = 0;
+            game.currentCategoryIndex++;
+        }
+        // Move to the next round
+        else {
+            game.currentRoundIndex++;
+        }
 
-        // Start counter for next round
+
+        // Start counter for next round if game is not over
         let countdown = 5;
         this.emitToGame(game.gameId, 'next-round-countdown', countdown);
         const interval = setInterval(() => {
             countdown--;
-            console.log('Starting next round in', countdown);
             this.emitToGame(game.gameId, 'next-round-countdown', countdown);
             if (countdown === 0) {
                 clearInterval(interval);
-                this.startRound(null, game.gameId);
+                this.startRound(game.gameId);
             }
         }, 1000);
     }
 
-    // Helper to get the game object by player socket ID
-    private findGameByPlayerSocket(socketId: string): Game | undefined {
-        return this.games.find(game => socketId in game.players);
-    }
 
-    // Helper to generate a random fact (you can replace this with an actual service)
-    private generateRandomFact(): string {
-        const facts = [
-            'The AI was invented in the 1950s.',
-            'AI can never surpass human intelligence.',
-            'Machine learning is a subset of AI.',
-        ];
-        return facts[Math.floor(Math.random() * facts.length)];
-    }
-
-    // Helper to generate a unique game ID
     private generateGameId(): string {
         return Math.random().toString(36).substring(2, 15);
-    }
-
-    // Helper to get the correct answer for a round (stubbed for now)
-    private getCorrectAnswer(fact: string): string {
-        if (fact === 'The AI was invented in the 1950s.') {
-            return 'fact';
-        }
-        if (fact === 'AI can never surpass human intelligence.') {
-            return 'fiction';
-        }
-        return 'fact';
     }
 }

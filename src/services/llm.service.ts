@@ -25,35 +25,44 @@ export class LlmService {
         };
 
         if (responseFormat)
-            prompt += "\n\nReturn your response in the following format:\n\n" + JSON.stringify(responseFormat);
+            prompt += "\n\nReturn your response in the following JSON format:\n\n" + responseFormat;
 
-        const response = await this.client.chat.completions.create({
-            messages: [
-                {
-                    role: "user",
-                    content: prompt,
-                }
-            ],
-            model: model,
-            temperature: temperature,
-        })
+        let retries = 3;
 
-        let jsonString = response.choices[0].message.content;
+        while (retries-- > 0) {
+            const response = await this.client.chat.completions.create({
+                messages: [
+                    {
+                        role: "user",
+                        content: prompt,
+                    }
+                ],
+                model: model,
+                temperature: temperature,
+            })
 
-        if (!jsonString) return null;
+            let jsonString = response.choices[0].message.content;
 
-        try {
-            // clean up
-            jsonString = jsonString
-                .replace(/^[^{\[]*/, '')
-                .replace(/[^}\]]*$/, '');
-            // parse
-            result.json = JSON.parse(jsonString);
-            return result;
+            if (!jsonString) {
+                continue;
+            }
+
+            try {
+                // clean up
+                jsonString = jsonString
+                    .replace(/^[^{\[]*/, '')
+                    .replace(/[^}\]]*$/, '');
+                // parse
+                result.json = JSON.parse(jsonString);
+                return result;
+            }
+            catch (error) {
+                console.error(error);
+                console.log(jsonString)
+                continue;
+            }
         }
-        catch (error) {
-            console.error(error);
-            return null;
-        }
+
+        return null;
     }
 }
