@@ -10,8 +10,8 @@ import { Server, Socket } from 'socket.io';
 import { QuestionsService } from '../questions/questions.service';
 import { TrueFalseQuestion } from '../questions/entities/TrueFalseQuestion.interface';
 import { MultipleChoiceQuestion } from '../questions/entities/MultipleChoiceQuestion.interface';
-import { QuestionType } from 'src/types/QuestionType.enum';
 import { Logger } from '@nestjs/common';
+import { categoryData } from 'src/constants/categories';
 
 
 interface Player {
@@ -25,7 +25,7 @@ interface Game {
     players: Record<string, Player>; // {socketId: Player}
     categories: { value: string, playerName: string }[];
     numRounds: number;
-    questions: ({ question: MultipleChoiceQuestion, type: QuestionType.MULTIPLE_CHOICE } | { question: TrueFalseQuestion, type: QuestionType.TRUE_FALSE })[];
+    questions: MultipleChoiceQuestion[];
     currentCategoryIndex: number;
     currentRoundIndex: number;
     isRoundActive: boolean;
@@ -78,7 +78,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             numRounds: data.numRounds,
             currentRoundIndex: 0,
             isRoundActive: false,
-            roundTimeLimit: 15,
+            roundTimeLimit: 25,
             questions: [],
         };
 
@@ -106,6 +106,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     startGame(client: Socket, @MessageBody() gameId: string) {
         const game = this.games.find(g => g.gameId === gameId);
         if (game && Object.keys(game.players).length > 1) {
+            if (game.categories.length === 0) {
+                game.categories = categoryData.map(category => ({ value: category.label, playerName: '' }));
+            }
             this.emitToGame(gameId, 'gameStarted', {});
             this.startRound(gameId);
         }
@@ -150,25 +153,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 });
             }
 
-            let questionObj;
+            const question = await this.questionsService.generateMultipleChoiceQuestion(category);
 
-            if (Math.random() > 0) {
-                const question = await this.questionsService.generateMultipleChoiceQuestion(category);
-                questionObj = { question: question, type: QuestionType.MULTIPLE_CHOICE };
-            }
-            else {
-                const question = await this.questionsService.generateTrueFalseQuestion(category);
-                questionObj = { question: question, type: QuestionType.TRUE_FALSE };
-            }
-
-            game.questions.push(questionObj);
+            game.questions.push(question);
             game.isRoundActive = true;
 
             this.emitToGame(gameId, 'newRound',
                 {
-                    question: questionObj.question.question,
-                    questionType: questionObj.type,
-                    answers: questionObj.type === QuestionType.MULTIPLE_CHOICE ? questionObj.question.options : null,
+                    question: question.question,
+                    answers: question.options,
                     roundIndex
                 }
             );
@@ -197,8 +190,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         if (game && game.isRoundActive) {
 
-            const questionObj = game.questions[game.currentRoundIndex];
-            let correctAnswer = questionObj.question.answer;
+            const question = game.questions[game.currentRoundIndex];
+            let correctAnswer = question.answer;
 
             const pointsAwarded =
                 data.vote !== correctAnswer
@@ -213,8 +206,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         game.isRoundActive = false;
 
         // Emit round results
-        const correctAnswer = game.questions[0].question.question;
-
         const currentResults: { socketId: string, name: string, points: number }[]
             = Object.entries(game.players).map(([socketId, player]) => {
                 return { socketId, name: player.name, points: player.points };
@@ -223,14 +214,27 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         currentResults.sort((a, b) => b.points - a.points);
 
         this.emitToGame(game.gameId, 'roundResults', {
-            correctAnswer,
+            allOptions: game.questions[0].options,
+            correctOption: game.questions[0].answer,
             results: currentResults
         });
 
         // Check if the game is over
         if (game.currentRoundIndex + 1 === game.numRounds && game.currentCategoryIndex + 1 === game.categories.length) {
-            this.emitToGame(game.gameId, 'gameOver', { results: currentResults });
-            return;
+            // Calculate ranks for all players, remembering that some players can have the same score
+            // Return a list of {rank, name, points}
+            const ranks: { rank: number, name: string, points: number }[] = [];
+            let rank = 0;
+            let previousPoints = -1;
+            currentResults.forEach((player, index) => {
+                if (player.points !== previousPoints) {
+                    rank = rank + 1;
+                }
+                ranks.push({ rank, name: player.name, points: player.points });
+                previousPoints = player.points;
+            });
+
+            this.emitToGame(game.gameId, 'gameOver', { gameResults: ranks });
         }
         // If the category is over, move to the next category
         else if (game.currentRoundIndex + 1 === game.numRounds) {
@@ -243,7 +247,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
 
 
-        // Start counter for next round if game is not over
+        // Start counter for next round
         let countdown = 5;
         this.emitToGame(game.gameId, 'next-round-countdown', countdown);
         const interval = setInterval(() => {
