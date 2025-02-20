@@ -78,7 +78,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             numRounds: data.numRounds,
             currentRoundIndex: 0,
             isRoundActive: false,
-            roundTimeLimit: 25,
+            roundTimeLimit: 5,
             questions: [],
         };
 
@@ -107,7 +107,17 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const game = this.games.find(g => g.gameId === gameId);
         if (game && Object.keys(game.players).length > 1) {
             if (game.categories.length === 0) {
-                game.categories = categoryData.map(category => ({ value: category.label, playerName: '' }));
+                // Choose 5 random categories
+                const categories = categoryData.map(c => c.label);
+                const selectedCategories: string[] = [];
+                for (let i = 0; i < 5; i++) {
+                    const randomIndex = Math.floor(Math.random() * categories.length);
+                    selectedCategories.push(categories.splice(randomIndex, 1)[0]);
+                }
+
+                selectedCategories.forEach(category => {
+                    game.categories.push({ value: category, playerName: "" });
+                });
             }
             this.emitToGame(gameId, 'gameStarted', {});
             this.startRound(gameId);
@@ -119,6 +129,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const game = this.games.find(g => g.gameId === data.gameId);
         if (game) {
             const player = game.players[client.id];
+
+            console.log(`Adding category: ${data.category}`)
 
             game.categories.push({ value: data.category, playerName: player.name });
             this.emitToGame(data.gameId, 'categorySelected',
@@ -219,6 +231,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             results: currentResults
         });
 
+        console.log("currentCategoryIndex", game.currentCategoryIndex);
+        console.log('categories length', game.categories.length);
+        console.log("currentRoundIndex", game.currentRoundIndex);
+        console.log("numRounds", game.numRounds);
+
         // Check if the game is over
         if (game.currentRoundIndex + 1 === game.numRounds && game.currentCategoryIndex + 1 === game.categories.length) {
             // Calculate ranks for all players, remembering that some players can have the same score
@@ -235,6 +252,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             });
 
             this.emitToGame(game.gameId, 'gameOver', { gameResults: ranks });
+            return;
         }
         // If the category is over, move to the next category
         else if (game.currentRoundIndex + 1 === game.numRounds) {
