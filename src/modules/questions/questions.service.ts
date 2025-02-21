@@ -9,10 +9,12 @@ export class QuestionsService {
         private readonly llmService: LlmService,
     ) { }
 
-    async generateMultipleChoiceQuestion(category: string): Promise<MultipleChoiceQuestion> {
+    async generateMultipleChoiceQuestion(category: string, previousQuestions: string[]): Promise<MultipleChoiceQuestion> {
         const response = await this.llmService.generateJSON({
             prompt: `Generate a multiple choice question on the following topic ${category}. Ensure the answer you specify IS the correct answer to the question.
-Use zero-based indexing for the correct answer. For example, if the correct answer is the first option, specify 0 as the answer.`,
+Use zero-based indexing for the correct answer. For example, if the correct answer is the first option, specify 0 as the answer.
+Here is a list of the previous questions that you have produced. You are being given this list so that you can avoid generating the same question twice.
+${previousQuestions.map((question, index) => `${index + 1}. ${question}`).join('\n')}`,
             jsonResponseFormat: `{
     "question": string,
     "options": [string, string, string, string],

@@ -1,7 +1,7 @@
 export const categoryData: { label: string, description: string }[] = [
     { label: "Geography", description: "Questions about countries, cities, and landmarks." },
     { label: "History", description: "Questions about historical events and figures." },
-    { label: "AI", description: "Questions about artificial intelligence and machine learning." },
+    { label: "Generative AI", description: "Questions about Generative AI products and techs" },
     { label: "Chemistry", description: "Questions about chemical elements and reactions." },
     { label: "Biology", description: "Questions about living organisms and ecosystems." },
     { label: "Physics", description: "Questions about matter, energy, and forces." },

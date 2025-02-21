@@ -78,7 +78,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             numRounds: data.numRounds,
             currentRoundIndex: 0,
             isRoundActive: false,
-            roundTimeLimit: 5,
+            roundTimeLimit: 25,
             questions: [],
         };
 
@@ -165,7 +165,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 });
             }
 
-            const question = await this.questionsService.generateMultipleChoiceQuestion(category);
+            const question = await this.questionsService.generateMultipleChoiceQuestion(category, game.questions.map(q => q.question));
 
             game.questions.push(question);
             game.isRoundActive = true;
