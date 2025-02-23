@@ -130,8 +130,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         if (game) {
             const player = game.players[client.id];
 
-            console.log(`Adding category: ${data.category}`)
-
             game.categories.push({ value: data.category, playerName: player.name });
             this.emitToGame(data.gameId, 'categorySelected',
                 { category: data.category, playerName: player.name }
