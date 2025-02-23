@@ -153,7 +153,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 // Display category to user
                 let countdown = 5;
                 this.emitToGame(gameId, 'categoryCountdown', countdown);
-                await new Promise<void>((resolve) => {
+                const categoryCountdownPromise = new Promise<void>((resolve) => {
                     const interval = setInterval(() => {
                         countdown--;
                         this.emitToGame(gameId, 'categoryCountdown', countdown);
@@ -163,17 +163,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
                         }
                     }, 1000);
                 });
+                const questionGenPromise = this.questionsService.generateMultipleChoiceQuestion(category, game.questions.map(q => q.question))
+                    .then((question) => game.questions.push(question));
+                // This has the effect of generating the first question while the category is being displayed
+                await Promise.all([categoryCountdownPromise, questionGenPromise]);
             }
 
-            const question = await this.questionsService.generateMultipleChoiceQuestion(category, game.questions.map(q => q.question));
-
-            game.questions.push(question);
             game.isRoundActive = true;
 
             this.emitToGame(gameId, 'newRound',
                 {
-                    question: question.question,
-                    answers: question.options,
+                    question: game.questions[roundIndex].question,
+                    answers: game.questions[roundIndex].options,
                     roundIndex
                 }
             );
@@ -181,18 +182,28 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             let countdown = game.roundTimeLimit;
             this.emitToGame(gameId, 'countdown', countdown);
 
-            const interval = setInterval(() => {
-                countdown--;
-                this.emitToGame(gameId, 'countdown', countdown);
-                if (!game.isRoundActive || countdown === 0) {
-                    clearInterval(interval);
-                    this.emitToGame(gameId, 'countdown', 0);
-
-                    if (countdown === 0) {
-                        this.endRound(game);
+            const roundCountdownPromise = new Promise<void>((resolve) => {
+                const interval = setInterval(() => {
+                    countdown--;
+                    this.emitToGame(gameId, 'countdown', countdown);
+                    if (!game.isRoundActive || countdown === 0) {
+                        clearInterval(interval);
+                        this.emitToGame(gameId, 'countdown', 0);
+                        if (countdown === 0) {
+                            this.endRound(game);
+                        }
+                        resolve();
                     }
-                }
-            }, 1000);
+                }, 1000);
+            });
+            if (roundIndex + 1 === game.questions.length && roundIndex !== game.numRounds - 1) {
+                // Generate next question while the current question is being displayed only if it's not the last round of the category (this is to avoid generating questions that won't be used)
+                const nextQuestionPromise = this.questionsService.generateMultipleChoiceQuestion(category, game.questions.map(q => q.question))
+                    .then((question) => game.questions.push(question));
+                await Promise.all([roundCountdownPromise, nextQuestionPromise]);
+            } else {
+                await roundCountdownPromise;
+            }
         }
     }
 
@@ -231,11 +242,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             results: currentResults
         });
 
-        console.log("currentCategoryIndex", game.currentCategoryIndex);
-        console.log('categories length', game.categories.length);
-        console.log("currentRoundIndex", game.currentRoundIndex);
-        console.log("numRounds", game.numRounds);
-
         // Check if the game is over
         if (game.currentRoundIndex + 1 === game.numRounds && game.currentCategoryIndex + 1 === game.categories.length) {
             // Calculate ranks for all players, remembering that some players can have the same score
@@ -258,6 +264,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         else if (game.currentRoundIndex + 1 === game.numRounds) {
             game.currentRoundIndex = 0;
             game.currentCategoryIndex++;
+            game.questions = [];
         }
         // Move to the next round
         else {
